@@ -23,9 +23,12 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.io.ByteArrayInputStream;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.Duration;
 import java.util.*;
@@ -37,7 +40,7 @@ class SecurosysSimpleSignLifecycleTSBTest {
     private static final String REALM = "master";
     private static final String EVENT_LISTENER_ID = "securosys-hsm-simple-sign-listener";
     private static final String USER_KEY_ATTRIBUTE = "securosys_user_key_name";
-    private static final String USER_PUBLIC_KEY_ATTRIBUTE = "securosys_public_key";
+    private static final String USER_CERTIFICATE_ATTRIBUTE = "securosys_certificate";
     private static final Logger LOGGER = LoggerFactory.getLogger("KEYCLOAK_TEST");
 
     private static String serverUrl;
@@ -84,7 +87,7 @@ class SecurosysSimpleSignLifecycleTSBTest {
         UserRepresentation user = waitForUserHsmAttributes(userId);
 
         String keyLabel = firstAttribute(user, USER_KEY_ATTRIBUTE);
-        String publicKeyBase64 = firstAttribute(user, USER_PUBLIC_KEY_ATTRIBUTE);
+        String publicKeyBase64 = publicKeyFromCertificate(firstAttribute(user, USER_CERTIFICATE_ATTRIBUTE));
 
         assertEquals(username + "_key", keyLabel);
         assertNotNull(publicKeyBase64);
@@ -190,7 +193,7 @@ class SecurosysSimpleSignLifecycleTSBTest {
 
         while (System.nanoTime() < deadline) {
             user = adminClient.realm(REALM).users().get(userId).toRepresentation();
-            if (firstAttribute(user, USER_KEY_ATTRIBUTE) != null && firstAttribute(user, USER_PUBLIC_KEY_ATTRIBUTE) != null) {
+            if (firstAttribute(user, USER_KEY_ATTRIBUTE) != null && firstAttribute(user, USER_CERTIFICATE_ATTRIBUTE) != null) {
                 return user;
             }
             Thread.sleep(1000);
@@ -222,6 +225,30 @@ class SecurosysSimpleSignLifecycleTSBTest {
         verifier.initVerify(publicKey);
         verifier.update(payload);
         return verifier.verify(signature);
+    }
+
+    private static String publicKeyFromCertificate(String certificate) throws Exception {
+        assertNotNull(certificate);
+        byte[] certificateBytes = decodeCertificate(certificate);
+        CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
+        X509Certificate x509Certificate = (X509Certificate) certificateFactory.generateCertificate(
+                new ByteArrayInputStream(certificateBytes));
+        return Base64.getEncoder().encodeToString(x509Certificate.getPublicKey().getEncoded());
+    }
+
+    private static byte[] decodeCertificate(String certificate) {
+        String normalized = certificate.trim();
+        if (normalized.contains("-----BEGIN CERTIFICATE-----")) {
+            normalized = normalized
+                    .replaceAll("(?m)^-----BEGIN CERTIFICATE-----", "")
+                    .replaceAll("(?m)^-----END CERTIFICATE-----", "")
+                    .replaceAll("\\s", "");
+        }
+        try {
+            return Base64.getDecoder().decode(normalized);
+        } catch (IllegalArgumentException e) {
+            return certificate.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        }
     }
 
     private static void waitUntilUserIsDeleted(String userId) throws InterruptedException {
