@@ -5,10 +5,12 @@ Keycloak Securosys HSM Simple Sign Provider extends
 This module does not work standalone. The base Securosys HSM provider must be installed and configured in Keycloak,
 because this module reuses its HSM/JCE/TSB configuration and client integration.
 
-The module adds a realm endpoint for signing arbitrary Base64 payloads with a user's HSM key:
+The module adds realm endpoints for signing arbitrary Base64 payloads and decrypting Base64 encrypted payloads with a
+user's HSM key:
 
 ```text
 POST /realms/{realm}/user_key/sign
+POST /realms/{realm}/user_key/decrypt
 POST /realms/{realm}/user_key/certificate
 POST /realms/{realm}/user_key/certificate/csr
 POST /realms/{realm}/user_key/certificate/import
@@ -18,6 +20,7 @@ Signing operations run externally on HSM. Certificate information is stored on t
 
 Plugin support for now:
 - User payload signing using SHA256withRSA
+- User payload decrypt using RSA cipher algorithms
 - Automatic self-signed certificate creation for user HSM keys
 - CSR generation for external CA/PKI signing
 - Import of externally issued certificates
@@ -125,7 +128,10 @@ Sign a Base64 payload:
 curl -X POST "http://localhost:8080/realms/master/user_key/sign" \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"payload":"aGVsbG8="}'
+  -d '{
+    "payload": "aGVsbG8=",
+    "signatureAlgorithm": "SHA256_WITH_RSA"
+  }'
 ```
 
 Successful response:
@@ -137,6 +143,38 @@ Successful response:
 ```
 
 If no active Securosys HSM configuration or HSM client is available, the endpoint returns **204 No Content**.
+
+If **signatureAlgorithm** is omitted, **SHA256_WITH_RSA** is used. Supported RSA signing values are
+**SHA224_WITH_RSA_PSS**, **SHA256_WITH_RSA_PSS**, **SHA384_WITH_RSA_PSS**, **SHA512_WITH_RSA_PSS**,
+**SHA224_WITH_RSA**, **SHA256_WITH_RSA**, **SHA384_WITH_RSA**, **SHA512_WITH_RSA**, **SHA1_WITH_RSA**, and
+**SHA1_WITH_RSA_PSS**. The JCE-style names such as **SHA256withRSA** and **SHA256withRSA/PSS** are also accepted.
+
+## Decrypt Endpoint
+
+Decrypt a Base64 encrypted payload with the HSM key assigned to the authenticated user:
+
+```sh
+curl -X POST "http://localhost:8080/realms/master/user_key/decrypt" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "encryptedPayload": "<base64-encrypted-payload>",
+    "cipherAlgorithm": "RSA_PADDING_OAEP_WITH_SHA512"
+  }'
+```
+
+Successful response:
+
+```json
+{
+  "payload": "base64-decrypted-payload"
+}
+```
+
+If **cipherAlgorithm** is omitted, **RSA_PADDING_OAEP_WITH_SHA512** is used. Supported RSA values are
+**RSA_PADDING_OAEP_WITH_SHA512**, **RSA**, **RSA_PADDING_OAEP_WITH_SHA224**, **RSA_PADDING_OAEP_WITH_SHA256**,
+**RSA_PADDING_OAEP_WITH_SHA1**, **RSA_PADDING_OAEP**, **RSA_PADDING_OAEP_WITH_SHA384**, **RSA_PADDING_PKCS**, and
+**RSA_NO_PADDING**.
 
 ## Certificate Endpoints
 

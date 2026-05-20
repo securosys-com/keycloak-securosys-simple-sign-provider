@@ -25,11 +25,14 @@ import com.securosys.simple.sign.client.HsmClient;
 import com.securosys.simple.sign.client.HsmClientFactory;
 import com.securosys.simple.sign.client.config.Config;
 import com.securosys.simple.sign.client.dto.request.CertificateIssueOptions;
+import com.securosys.simple.sign.client.dto.result.DecryptResult;
 import com.securosys.simple.sign.client.dto.result.SignResult;
+import com.securosys.simple.sign.client.enums.CipherAlgorithm;
 import com.securosys.simple.sign.client.enums.SignatureAlgorithm;
 import com.securosys.simple.sign.client.util.HsmConfigUtil;
 import com.securosys.simple.sign.provider.signature.resource.record.CertificateImportRequest;
 import com.securosys.simple.sign.provider.signature.resource.record.CertificateRequest;
+import com.securosys.simple.sign.provider.signature.resource.record.DecryptRequest;
 import com.securosys.simple.sign.provider.signature.resource.record.SignRequest;
 import io.vertx.core.json.JsonObject;
 import jakarta.ws.rs.*;
@@ -88,6 +91,40 @@ public class SecurosysUserKeyResource {
             return Response.noContent().build();
         }
         return Response.ok(signedPayloadJson).build();
+    }
+
+    @POST
+    @Path("/decrypt")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response decrypt(DecryptRequest decryptRequest) {
+        LOGGER.debugf("decrypt: /decrypt (POST) endpoint called");
+
+        AuthenticationManager.AuthResult authResult = authenticateBearerToken();
+        if (authResult == null || authResult.getUser() == null) {
+            LOGGER.debugf("decrypt: No valid Bearer Token present");
+            return Response.status(401).build();
+        }
+        if (decryptRequest == null
+                || decryptRequest.encryptedPayload() == null
+                || decryptRequest.encryptedPayload().isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(JsonObject.of("error", "encryptedPayload is required"))
+                    .build();
+        }
+
+        try {
+            JsonObject decryptedPayloadJson = createAndSerializeDecrypt(decryptRequest, authResult.getUser());
+            if (decryptedPayloadJson == null) {
+                return Response.noContent().build();
+            }
+            return Response.ok(decryptedPayloadJson).build();
+        } catch (Exception e) {
+            LOGGER.error("decrypt: decrypt operation failed", e);
+            return Response.serverError()
+                    .entity(JsonObject.of("error", errorMessage(e)))
+                    .build();
+        }
     }
 
     @POST
@@ -245,13 +282,17 @@ public class SecurosysUserKeyResource {
         }
 
         String keyLabel = getUserKeyLabel(userModel);
+        String signatureAlgorithm = signRequest.signatureAlgorithm();
+        if (signatureAlgorithm == null || signatureAlgorithm.isBlank()) {
+            signatureAlgorithm = SignatureAlgorithm.SHA256_WITH_RSA;
+        }
         SignResult signature = null;
         try {
             signature = hsmClient.createSignature(
                     Base64.decode(signRequest.payload()),
                     keyLabel,
                     null,
-                    SignatureAlgorithm.SHA256_WITH_RSA,
+                    signatureAlgorithm,
                     "DER"
             );
         } catch (Throwable e) {
@@ -260,6 +301,27 @@ public class SecurosysUserKeyResource {
 
 
         return serializeSignatureResponse(signature);
+    }
+
+    public JsonObject createAndSerializeDecrypt(DecryptRequest decryptRequest, UserModel userModel) throws Exception {
+        HsmClient hsmClient = createHsmClient("decrypt");
+        if (hsmClient == null) {
+            return null;
+        }
+
+        String keyLabel = getUserKeyLabel(userModel);
+        String algorithm = decryptRequest.cipherAlgorithm();
+        if (algorithm == null || algorithm.isBlank()) {
+            algorithm = CipherAlgorithm.RSA_PADDING_OAEP_WITH_SHA512.name();
+        }
+
+        DecryptResult decryptResult = hsmClient.decrypt(
+                decryptRequest.encryptedPayload(),
+                keyLabel,
+                null,
+                algorithm
+        );
+        return serializeDecryptResponse(decryptResult);
     }
 
     private HsmClient createHsmClient(String operation) {
@@ -346,6 +408,12 @@ public class SecurosysUserKeyResource {
     private JsonObject serializeSignatureResponse(SignResult signResult) throws IOException {
         return JsonObject.of(
                 "signature", Base64.encodeBytes(signResult.getSignature())
+        );
+    }
+
+    private JsonObject serializeDecryptResponse(DecryptResult decryptResult) throws IOException {
+        return JsonObject.of(
+                "payload", Base64.encodeBytes(decryptResult.getPayload())
         );
     }
 

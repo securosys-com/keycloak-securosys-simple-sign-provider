@@ -21,15 +21,19 @@ import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -56,7 +60,7 @@ class SecurosysSimpleSignLifecycleJCETest {
 
     @Container
     static GenericContainer<?> keycloak = KeycloakProviderContainer.withLocalProviders(
-                    new GenericContainer<>(DockerImageName.parse("quay.io/keycloak/keycloak:latest")))
+                    KeycloakProviderContainer.create())
             .withExposedPorts(8080, 9000)
             .withEnv("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
             .withEnv("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")
@@ -87,7 +91,7 @@ class SecurosysSimpleSignLifecycleJCETest {
     }
 
     @Test
-    void shouldGenerateUserKeySignPayloadAndDeleteUser() throws Exception {
+    void shouldGenerateUserKeySignDecryptPayloadAndDeleteUser() throws Exception {
         String username = "simple-sign-" + UUID.randomUUID();
         String password = "test-password";
 
@@ -107,7 +111,10 @@ class SecurosysSimpleSignLifecycleJCETest {
         Response signResponse = RestAssured.given()
                 .contentType("application/json")
                 .header("Authorization", "Bearer " + accessToken)
-                .body(Map.of("payload", payloadBase64))
+                .body(Map.of(
+                        "payload", payloadBase64,
+                        "signatureAlgorithm", "SHA256_WITH_RSA"
+                ))
                 .post(serverUrl + "/realms/" + REALM + "/user_key/sign");
 
         assertEquals(200, signResponse.statusCode(), signResponse.asString());
@@ -116,6 +123,9 @@ class SecurosysSimpleSignLifecycleJCETest {
         assertFalse(signatureBase64.isBlank());
 
         assertTrue(verifyRsaSignature(payload, Base64.getDecoder().decode(signatureBase64), publicKeyBase64));
+
+        byte[] decryptedPayload = decryptWithUserKey(accessToken, publicKeyBase64, "secret message".getBytes(StandardCharsets.UTF_8));
+        assertEquals("secret message", new String(decryptedPayload, StandardCharsets.UTF_8));
 
         adminClient.realm(REALM).users().delete(userId);
         waitUntilUserIsDeleted(userId);
@@ -230,6 +240,39 @@ class SecurosysSimpleSignLifecycleJCETest {
         verifier.initVerify(publicKey);
         verifier.update(payload);
         return verifier.verify(signature);
+    }
+
+    private static byte[] decryptWithUserKey(String accessToken, String publicKeyBase64, byte[] payload) throws Exception {
+        String encryptedPayloadBase64 = encryptWithRsaOaepSha512(publicKeyBase64, payload);
+
+        Response decryptResponse = RestAssured.given()
+                .contentType("application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .body(Map.of(
+                        "encryptedPayload", encryptedPayloadBase64,
+                        "cipherAlgorithm", "RSA_PADDING_OAEP_WITH_SHA512"
+                ))
+                .post(serverUrl + "/realms/" + REALM + "/user_key/decrypt");
+
+        assertEquals(200, decryptResponse.statusCode(), decryptResponse.asString());
+        String decryptedPayloadBase64 = decryptResponse.jsonPath().getString("payload");
+        assertNotNull(decryptedPayloadBase64);
+        assertFalse(decryptedPayloadBase64.isBlank());
+        return Base64.getDecoder().decode(decryptedPayloadBase64);
+    }
+
+    private static String encryptWithRsaOaepSha512(String publicKeyBase64, byte[] payload) throws Exception {
+        byte[] encodedPublicKey = Base64.getDecoder().decode(publicKeyBase64);
+        PublicKey publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(encodedPublicKey));
+
+        Cipher cipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, publicKey, new OAEPParameterSpec(
+                "SHA-512",
+                "MGF1",
+                MGF1ParameterSpec.SHA512,
+                PSource.PSpecified.DEFAULT
+        ));
+        return Base64.getEncoder().encodeToString(cipher.doFinal(payload));
     }
 
     private static String publicKeyFromCertificate(String certificate) throws Exception {

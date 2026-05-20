@@ -33,6 +33,7 @@ public enum CipherAlgorithm {
     RSA_PADDING_OAEP_WITH_SHA1("RSApaddingOAEPwithSHA1"),
     RSA_PADDING_OAEP("RSApaddingOAEP"),
     RSA_PADDING_OAEP_WITH_SHA384("RSApaddingOAEPwithSHA384"),
+    RSA_PADDING_PKCS("RSApaddingPKCS"),
     RSA_NO_PADDING("RSAnopadding"),
     AES_GCM("AES_GCM"),
     AES_CTR("AES_CTR"),
@@ -57,6 +58,17 @@ public enum CipherAlgorithm {
     public static CipherAlgorithm fromAlgorithm(String algorithm) {
         for (CipherAlgorithm cipherAlgorithm : values()) {
             if (cipherAlgorithm.getAlgorithm().equalsIgnoreCase(algorithm)) {
+                return cipherAlgorithm;
+            }
+        }
+        String msg = String.format("algorithm='%s' can not be mapped to CipherAlgorithm", algorithm);
+        throw new BusinessException(msg, BusinessReason.ERROR_INVALID_VALUE_FOR_ENUM);
+    }
+
+    public static CipherAlgorithm fromNameOrAlgorithm(String algorithm) {
+        for (CipherAlgorithm cipherAlgorithm : values()) {
+            if (cipherAlgorithm.name().equalsIgnoreCase(algorithm)
+                    || cipherAlgorithm.getAlgorithm().equalsIgnoreCase(algorithm)) {
                 return cipherAlgorithm;
             }
         }

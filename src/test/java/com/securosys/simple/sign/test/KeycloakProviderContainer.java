@@ -2,6 +2,7 @@ package com.securosys.simple.sign.test;
 
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.MountableFile;
+import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -12,8 +13,22 @@ public final class KeycloakProviderContainer {
     private static final Path PROVIDERS_DIR = Path.of("providers");
     private static final Path PROVIDER_DIST_DIR = Path.of("build", "provider-dist");
     private static final String KEYCLOAK_PROVIDERS_DIR = "/opt/keycloak/providers";
+    private static final String KEYCLOAK_IMAGE_PROPERTY = "keycloak.test.image";
+    private static final String KEYCLOAK_PLATFORM_PROPERTY = "keycloak.test.platform";
+    private static final String DEFAULT_KEYCLOAK_IMAGE = "quay.io/keycloak/keycloak:26.0.8";
+    private static final String DEFAULT_KEYCLOAK_PLATFORM = "linux/amd64";
 
     private KeycloakProviderContainer() {
+    }
+
+    public static GenericContainer<?> create() {
+        String image = System.getProperty(KEYCLOAK_IMAGE_PROPERTY, DEFAULT_KEYCLOAK_IMAGE);
+        String platform = System.getProperty(KEYCLOAK_PLATFORM_PROPERTY, DEFAULT_KEYCLOAK_PLATFORM);
+        GenericContainer<?> container = new GenericContainer<>(DockerImageName.parse(image));
+        if (platform != null && !platform.isBlank()) {
+            container.withCreateContainerCmdModifier(command -> command.withPlatform(platform));
+        }
+        return container;
     }
 
     public static GenericContainer<?> withLocalProviders(GenericContainer<?> container) {

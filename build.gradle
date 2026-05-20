@@ -113,6 +113,11 @@ test {
 
     useJUnitPlatform()
 
+    systemProperty 'keycloak.test.image',
+            System.getProperty('keycloak.test.image', 'quay.io/keycloak/keycloak:26.0.8')
+    systemProperty 'keycloak.test.platform',
+            System.getProperty('keycloak.test.platform', 'linux/amd64')
+
     testLogging {
         events "passed", "skipped", "failed"
     }

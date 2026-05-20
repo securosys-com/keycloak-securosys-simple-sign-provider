@@ -20,6 +20,7 @@ package com.securosys.simple.sign.client.enums;
 
 import com.securosys.primus.jce.spi2.SignatureAlgorithms;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -88,6 +89,32 @@ public class SignatureAlgorithm {
     public static final String SPHINCS_PLUS = "SphincsPlus";
     public static final String KYBER = "Kyber";
 
+    private static final Map<String, String> TSB_TO_JCE_ALGORITHMS = Map.ofEntries(
+            Map.entry("SHA224_WITH_RSA_PSS", SHA224_WITH_RSA_PSS),
+            Map.entry("SHA256_WITH_RSA_PSS", SHA256_WITH_RSA_PSS),
+            Map.entry("SHA384_WITH_RSA_PSS", SHA384_WITH_RSA_PSS),
+            Map.entry("SHA512_WITH_RSA_PSS", SHA512_WITH_RSA_PSS),
+            Map.entry("SHA224_WITH_RSA", SHA224_WITH_RSA),
+            Map.entry("SHA256_WITH_RSA", SHA256_WITH_RSA),
+            Map.entry("SHA384_WITH_RSA", SHA384_WITH_RSA),
+            Map.entry("SHA512_WITH_RSA", SHA512_WITH_RSA),
+            Map.entry("SHA1_WITH_RSA", SHA1_WITH_RSA),
+            Map.entry("SHA1_WITH_RSA_PSS", SHA1_WITH_RSA_PSS)
+    );
+
+    private static final Map<String, String> JCE_TO_TSB_ALGORITHMS = Map.ofEntries(
+            Map.entry(SHA224_WITH_RSA_PSS, "SHA224_WITH_RSA_PSS"),
+            Map.entry(SHA256_WITH_RSA_PSS, "SHA256_WITH_RSA_PSS"),
+            Map.entry(SHA384_WITH_RSA_PSS, "SHA384_WITH_RSA_PSS"),
+            Map.entry(SHA512_WITH_RSA_PSS, "SHA512_WITH_RSA_PSS"),
+            Map.entry(SHA224_WITH_RSA, "SHA224_WITH_RSA"),
+            Map.entry(SHA256_WITH_RSA, "SHA256_WITH_RSA"),
+            Map.entry(SHA384_WITH_RSA, "SHA384_WITH_RSA"),
+            Map.entry(SHA512_WITH_RSA, "SHA512_WITH_RSA"),
+            Map.entry(SHA1_WITH_RSA, "SHA1_WITH_RSA"),
+            Map.entry(SHA1_WITH_RSA_PSS, "SHA1_WITH_RSA_PSS")
+    );
+
     private static final Set<String> ALLOWED_ALGORITHMS = Set.of(
             SignatureAlgorithm.SHA256_WITH_ECDSA,
             SignatureAlgorithm.SHA384_WITH_ECDSA,
@@ -99,6 +126,23 @@ public class SignatureAlgorithm {
 
     public static boolean allowedAlgorithms(String algorithm) {
         return algorithm != null && ALLOWED_ALGORITHMS.contains(algorithm);
+    }
+
+    public static String toJceAlgorithm(String algorithm) {
+        if (algorithm == null || algorithm.isBlank()) {
+            return SHA256_WITH_RSA;
+        }
+        return TSB_TO_JCE_ALGORITHMS.getOrDefault(algorithm, algorithm);
+    }
+
+    public static String toTsbAlgorithm(String algorithm) {
+        if (algorithm == null || algorithm.isBlank()) {
+            return "SHA256_WITH_RSA";
+        }
+        if (TSB_TO_JCE_ALGORITHMS.containsKey(algorithm)) {
+            return algorithm;
+        }
+        return JCE_TO_TSB_ALGORITHMS.getOrDefault(algorithm, algorithm);
     }
 
     public static String getOnlyHash(String algorithm){

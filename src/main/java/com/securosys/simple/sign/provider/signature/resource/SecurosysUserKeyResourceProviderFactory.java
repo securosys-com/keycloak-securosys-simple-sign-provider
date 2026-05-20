@@ -303,7 +303,11 @@ public class SecurosysUserKeyResourceProviderFactory implements RealmResourcePro
     public static void updateKeyAttributes(UserModel user, HsmClient hsmClient, String keyLabel) throws Exception {
         String certificate = hsmClient.getCertFromHsm(keyLabel, user.getUsername(), null);
         if (certificate == null || certificate.isBlank()) {
-            hsmClient.doSelfSignedCertificate(keyLabel, user.getUsername());
+            certificate = hsmClient.doSelfSignedCertificate(keyLabel, user.getUsername());
+            if (certificate != null && !certificate.isBlank()) {
+                setCertificateAttributes(user, certificate, true);
+                return;
+            }
             certificate = hsmClient.getCertFromHsm(keyLabel, user.getUsername(), null);
             if (certificate != null && !certificate.isBlank()) {
                 setCertificateAttributes(user, certificate, true);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.securosys.simple.sign.client.tsb;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,9 +19,15 @@ import com.securosys.simple.sign.client.HsmKeyAttributes;
 import com.securosys.simple.sign.client.config.TsbConfig;
 import com.securosys.simple.sign.client.dto.request.CertificateIssueOptions;
 import com.securosys.simple.sign.client.dto.request.CreateKeyDto;
+import com.securosys.simple.sign.client.dto.result.DecryptResult;
 import com.securosys.simple.sign.client.dto.result.SignResult;
+import com.securosys.simple.sign.client.enums.CipherAlgorithm;
+import com.securosys.simple.sign.client.enums.SignatureAlgorithm;
+import com.securosys.simple.sign.client.tsb.dto.request.SynchronousDecryptEnvelope;
+import com.securosys.simple.sign.client.tsb.dto.request.SynchronousDecryptRequest;
 import com.securosys.simple.sign.client.tsb.dto.request.SynchronousSignEnvelope;
 import com.securosys.simple.sign.client.tsb.dto.request.SynchronousSignRequest;
+import com.securosys.simple.sign.client.tsb.dto.response.SynchronousDecryptResponse;
 import com.securosys.simple.sign.client.tsb.dto.response.SynchronousSignResponse;
 import com.securosys.simple.sign.client.tsb.key.KeyAttributes;
 import com.securosys.simple.sign.client.tsb.key.KeyOperations;
@@ -114,6 +121,26 @@ public class TsbClient extends KeyOperations implements HsmClient {
     }
 
     @Override
+    public DecryptResult decrypt(String encryptedPayload, String keyName, String password, String cipherAlgorithm)
+            throws Exception {
+        SynchronousDecryptRequest request = new SynchronousDecryptRequest();
+        request.setEncryptedPayload(encryptedPayload);
+        request.setDecryptKeyName(keyName);
+        request.setKeyPassword(password);
+        request.setCipherAlgorithm(mapCipherAlgorithm(cipherAlgorithm));
+
+        String jsonBody = objectMapper.writeValueAsString(new SynchronousDecryptEnvelope(request));
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+            .uri(URI.create(getHostURL() + "/v1/synchronousDecrypt"))
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+            .build();
+
+        ResponseData response = doRequest(httpRequest, KeyOperationTokenName);
+        SynchronousDecryptResponse decryptResponse = readSynchronousDecryptResponse(response.getBody());
+        return new DecryptResult(Base64.getDecoder().decode(decryptResponse.getPayload()));
+    }
+
+    @Override
     public void createKey(CreateKeyDto createKeyDto) throws Exception {
         if (createKeyDto == null) {
             throw new IllegalArgumentException("CreateKeyDto cannot be null");
@@ -186,7 +213,7 @@ public class TsbClient extends KeyOperations implements HsmClient {
     }
 
     @Override
-    public void doSelfSignedCertificate(String keyLabel, String username) throws Exception {
+    public String doSelfSignedCertificate(String keyLabel, String username) throws Exception {
         if (keyLabel == null || keyLabel.isBlank()) {
             throw new IllegalArgumentException("Key label is required for TSB self-signed certificate generation");
         }
@@ -194,22 +221,32 @@ public class TsbClient extends KeyOperations implements HsmClient {
         Map<String, Object> standardCertificateAttributes = new HashMap<>();
         standardCertificateAttributes.put("commonName", username);
 
+        Map<String, Object> selfSignCertificateRequest = new HashMap<>();
+        selfSignCertificateRequest.put("signKeyName", keyLabel);
+        selfSignCertificateRequest.put("validity", 3650);
+        selfSignCertificateRequest.put("signatureAlgorithm", "SHA256_WITH_RSA");
+        selfSignCertificateRequest.put("standardCertificateAttributes", standardCertificateAttributes);
+        selfSignCertificateRequest.put("keyUsage", java.util.List.of("DIGITAL_SIGNATURE"));
+        selfSignCertificateRequest.put("extendedKeyUsage", java.util.List.of("ANY_EXTENDED_KEY_USAGE"));
+        selfSignCertificateRequest.put("certificateAuthority", true);
+
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("signKeyName", keyLabel);
-        requestBody.put("validity", 3650);
-        requestBody.put("signatureAlgorithm", "SHA256_WITH_RSA");
-        requestBody.put("standardCertificateAttributes", standardCertificateAttributes);
-        requestBody.put("keyUsage", java.util.List.of("DIGITAL_SIGNATURE"));
-        requestBody.put("extendedKeyUsage", java.util.List.of("ANY_EXTENDED_KEY_USAGE"));
-        requestBody.put("certificateAuthority", true);
+        requestBody.put("selfSignCertificateRequest", selfSignCertificateRequest);
 
         String jsonBody = objectMapper.writeValueAsString(requestBody);
         HttpRequest httpRequest = HttpRequest.newBuilder()
-            .uri(URI.create(getHostURL() + "/v1/certificate/synchronous/selfsign"))
+            .uri(URI.create(getHostURL() + "/v1/certificate/selfsign"))
             .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
             .build();
 
-        doRequest(httpRequest, KeyManagementTokenName);
+        ResponseData response = doRequest(httpRequest, KeyManagementTokenName);
+        JsonNode root = objectMapper.readTree(response.getBody());
+        String signRequestId = root.has("signRequestId") ? root.get("signRequestId").asText(null) : null;
+        if (signRequestId == null || signRequestId.isBlank()) {
+            throw new IOException("TSB self-signed certificate request did not return signRequestId: " + response.getBody());
+        }
+
+        return waitForExecutedRequest(signRequestId);
     }
 
     @Override
@@ -314,6 +351,39 @@ public class TsbClient extends KeyOperations implements HsmClient {
         }
     }
 
+    private String waitForExecutedRequest(String requestId) throws Exception {
+        int attempts = 60;
+        long delayMillis = 2000L;
+
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(URI.create(getHostURL() + "/v1/request/" + requestId))
+                .GET()
+                .build();
+
+            ResponseData response = doRequest(httpRequest, KeyManagementTokenName);
+            JsonNode root = objectMapper.readTree(response.getBody());
+            String status = root.has("status") ? root.get("status").asText(null) : null;
+
+            if ("EXECUTED".equalsIgnoreCase(status)) {
+                String result = root.has("result") ? root.get("result").asText(null) : null;
+                if (result == null || result.isBlank()) {
+                    throw new IOException("TSB request " + requestId + " executed without certificate result: " + response.getBody());
+                }
+                return normalizeCertificate(result);
+            }
+
+            if ("PENDING".equalsIgnoreCase(status)) {
+                Thread.sleep(delayMillis);
+                continue;
+            }
+
+            throw new IOException("TSB request " + requestId + " failed with status " + status + ": " + response.getBody());
+        }
+
+        throw new IOException("Timed out waiting for TSB request " + requestId + " to execute");
+    }
+
     private String normalizeCertificate(String certificate) {
         if (certificate == null || certificate.isBlank()) {
             return null;
@@ -335,6 +405,12 @@ public class TsbClient extends KeyOperations implements HsmClient {
         return objectMapper.treeToValue(payload, SynchronousSignResponse.class);
     }
 
+    private SynchronousDecryptResponse readSynchronousDecryptResponse(String body) throws Exception {
+        JsonNode root = objectMapper.readTree(body);
+        JsonNode payload = root.has("decryptResponse") ? root.get("decryptResponse") : root;
+        return objectMapper.treeToValue(payload, SynchronousDecryptResponse.class);
+    }
+
     private byte[] decodeOptionalBase64(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -353,7 +429,14 @@ public class TsbClient extends KeyOperations implements HsmClient {
             case Algorithm.ES256, "SHA256withECDSA" -> "SHA256_WITH_ECDSA";
             case Algorithm.ES384, "SHA384withECDSA" -> "SHA384_WITH_ECDSA";
             case Algorithm.ES512, "SHA512withECDSA" -> "SHA512_WITH_ECDSA";
-            default -> algorithm;
+            default -> SignatureAlgorithm.toTsbAlgorithm(algorithm);
         };
+    }
+
+    private String mapCipherAlgorithm(String algorithm) {
+        if (algorithm == null || algorithm.isBlank()) {
+            return null;
+        }
+        return CipherAlgorithm.fromNameOrAlgorithm(algorithm).name();
     }
 }

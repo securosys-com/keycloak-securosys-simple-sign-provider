@@ -53,14 +53,20 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.OAEPParameterSpec;
 
+import com.google.common.base.Strings;
 import com.securosys.primus.jce.*;
+import com.securosys.primus.jce.spi0.*;
 import com.securosys.primus.tool2.KeyToolX;
-import com.securosys.simple.sign.client.enums.ExtendedKeyUsage;
-import com.securosys.simple.sign.client.enums.KeyUsage;
-import com.securosys.simple.sign.client.enums.KeytoolSignatureAlgorithm;
+import com.securosys.simple.sign.client.enums.*;
+import com.securosys.simple.sign.client.jce.dto.*;
+import com.securosys.simple.sign.client.jce.exception.AuthorizationExceptionHandler;
 import com.securosys.simple.sign.client.util.*;
 import com.securosys.simple.sign.client.util.CertificateUtil;
 import org.keycloak.crypto.Algorithm;
@@ -71,26 +77,13 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.securosys.primus.jce.encoding.DEREncodingException;
 import com.securosys.primus.jce.encoding.StringEncoding;
-import com.securosys.primus.jce.spi0.DuplicateEntryException;
-import com.securosys.primus.jce.spi0.NotFoundException;
-import com.securosys.primus.jce.spi0.SpiException;
-import com.securosys.primus.jce.spi0.WrongKeyPasswordException;
 import com.securosys.simple.sign.client.HsmClient;
 import com.securosys.simple.sign.client.HsmKeyAttributes;
 import com.securosys.simple.sign.client.config.JceConfig;
 import com.securosys.simple.sign.client.dto.request.CertificateIssueOptions;
 import com.securosys.simple.sign.client.dto.request.CreateKeyDto;
+import com.securosys.simple.sign.client.dto.result.DecryptResult;
 import com.securosys.simple.sign.client.dto.result.SignResult;
-import com.securosys.simple.sign.client.enums.PayloadType;
-import com.securosys.simple.sign.client.jce.dto.AddressFormatDto;
-import com.securosys.simple.sign.client.jce.dto.AttributesDto;
-import com.securosys.simple.sign.client.jce.dto.CertificateAttributesDto;
-import com.securosys.simple.sign.client.jce.dto.KeyAttributesDto;
-import com.securosys.simple.sign.client.jce.dto.LicenseDto;
-import com.securosys.simple.sign.client.jce.dto.PolicyDto;
-import com.securosys.simple.sign.client.jce.dto.SignPayload;
-import com.securosys.simple.sign.client.jce.dto.SignedKeyAttributesDto;
-import com.securosys.simple.sign.client.jce.dto.SynchronousCertificateRequestRequestDto;
 import com.securosys.simple.sign.client.jce.exception.BusinessException;
 import com.securosys.simple.sign.client.jce.exception.BusinessReason;
 
@@ -420,6 +413,43 @@ public class JceClient implements HsmClient {
                     BusinessReason.ERROR_DATA_INVALID_CONSTELLATION, e);
         }
     }
+    private static Key loadKeyFromKeyname(String keyName, char[] keyPassword, Long derivationValue) {
+        try {
+            Key key;
+
+            // handle if key has rollover capability (e.g. field 119, derivation index)
+            PrimusRolloverDeriveKey rolloverKey = KeyRotationUtil.getSymmetricRolloverKey(keyName, keyPassword);
+            if(rolloverKey != null && rolloverKey.getKey() != null) {
+                if(derivationValue != null && derivationValue != 0L) {
+                    return rolloverKey.getKey(derivationValue);
+                }
+                return rolloverKey.getKey();
+            }
+
+            KeyStore keyStore = KeyStore.getInstance(KEYSTORE_TYPE, JCE_PROVIDER);
+            keyStore.load(null);
+            key = keyStore.getKey(keyName, keyPassword);
+
+
+            if (key == null) {
+                String msg = String.format("A key with the name '%s' does not exist.", keyName);
+                throw new BusinessException(msg, BusinessReason.ERROR_KEY_NOT_EXISTENT);
+            }
+            else {
+                return key;
+            }
+        }
+        catch (UnrecoverableKeyException e) {
+            if(e.getCause() instanceof WrongKeyPasswordException) {
+                String msg = String.format("Key password mismatch for key '%s'.", keyName);
+                throw new BusinessException(msg, BusinessReason.ERROR_KEY_PASSWORD_MISMATCH, e);
+            }
+            throw createKeystoreAccessFailingException(e);
+        }
+        catch (IOException | KeyStoreException | NoSuchProviderException | CertificateException | NoSuchAlgorithmException e) {
+            throw createKeystoreAccessFailingException(e);
+        }
+    }
     /**
      * The key loaded is either a PrivateKey if the key is asymmetric or a SecretKey if the key is symmetric.
      */
@@ -451,6 +481,7 @@ public class JceClient implements HsmClient {
         String msg = "Could not load key. Access to HSM keystore is not working properly.";
         return new BusinessException(msg, BusinessReason.ERROR_GENERAL, e.getCause());
     }
+
 
     public SignedKeyAttributesDto getKeyAttributes(String keyName, char[] keyPassword) {
         this.login();
@@ -772,6 +803,9 @@ public class JceClient implements HsmClient {
                 signPayload.getSignatureAlgorithm(), signPayload.getSignatureType(), keyName);
     }
     private String mapKeycloakAlgorithm(String algorithm){
+        if (algorithm == null || algorithm.isBlank()) {
+            return SignatureAlgorithm.SHA256_WITH_RSA;
+        }
         switch (algorithm){
             case Algorithm.RS256 -> {
                 return "SHA256withRSA";
@@ -792,7 +826,7 @@ public class JceClient implements HsmClient {
                 return "SHA512withECDSA";
             }
         }
-        return algorithm;
+        return SignatureAlgorithm.toJceAlgorithm(algorithm);
 
     }
     private static SignResult createSignature(PrivateKey signKey,
@@ -860,6 +894,89 @@ public class JceClient implements HsmClient {
        signPayload.setSignatureAlgorithm(mapKeycloakAlgorithm(algorithm));
         return createSignature(signPayload);
     }
+
+    @Override
+    public DecryptResult decrypt(String encryptedPayload, String keyName, String password, String cipherAlgorithm) {
+        DecryptPayload decryptPayload = new DecryptPayload();
+        decryptPayload.setEncryptedPayload(encryptedPayload);
+        decryptPayload.setDecryptKeyName(keyName);
+        if (password != null) {
+            decryptPayload.setKeyPassword(password.toCharArray());
+        }
+        decryptPayload.setCipherAlgorithm(CipherAlgorithm.fromNameOrAlgorithm(cipherAlgorithm));
+        return new DecryptResult(decryptWithNonSka(decryptPayload));
+    }
+
+    private byte[] decryptWithNonSka(DecryptPayload decryptPayload) {
+        login();
+        Key decryptKey = loadKeyFromKeyname(
+                decryptPayload.getDecryptKeyName(),
+                decryptPayload.getKeyPassword(),
+                decryptPayload.getDerivationValue());
+        return decrypt(decryptKey, decryptPayload);
+    }
+
+    private static byte[] decrypt(Key decryptKey, DecryptPayload decryptPayload) {
+        String cipherAlgorithm = decryptPayload.getCipherAlgorithm().getAlgorithm();
+        try {
+            final Cipher cipher = Cipher.getInstance(cipherAlgorithm, PrimusProvider.getProviderName());
+            if(decryptPayload.getInitializationVector() == null) {
+                if (cipherAlgorithm.equals(CipherAlgorithm.RSA_PADDING_OAEP.getAlgorithm())) {
+                    cipher.init(Cipher.DECRYPT_MODE, decryptKey, OAEPParameterSpec.DEFAULT);
+                }
+                else {
+                    cipher.init(Cipher.DECRYPT_MODE, decryptKey);
+                }
+            }
+            else {
+                byte[] iv = Base64.getDecoder().decode(decryptPayload.getInitializationVector());
+                if (cipherAlgorithm.equals(CipherAlgorithm.CHACHA20_AEAD.getAlgorithm())) {
+                    GCMParameterSpec gcmSpec = new GCMParameterSpec(0, iv);
+                    cipher.init(Cipher.DECRYPT_MODE, decryptKey, gcmSpec);
+                } else if(decryptPayload.getTagLength() != null
+                        && cipherAlgorithm.equals(CipherAlgorithm.AES_GCM.getAlgorithm())
+                        && decryptPayload.getTagLength() != 0){
+                    GCMParameterSpec gcmSpec = new GCMParameterSpec(decryptPayload.getTagLength(), iv);
+                    cipher.init(Cipher.DECRYPT_MODE, decryptKey, gcmSpec);
+                }
+                else {
+                    IvParameterSpec ivSpec = new IvParameterSpec(iv); //NOSONAR: The iv is cryptographically secure
+                    cipher.init(Cipher.DECRYPT_MODE, decryptKey, ivSpec);
+                }
+            }
+            if(decryptPayload.getAdditionalAuthenticationData() != null) {
+                byte[] aad = Base64.getDecoder().decode(decryptPayload.getAdditionalAuthenticationData());
+                cipher.updateAAD(aad);
+            }
+            byte[] encryptedPayload = Base64.getDecoder().decode(decryptPayload.getEncryptedPayload());
+            return cipher.doFinal(encryptedPayload);
+        }
+        catch(AuthorizationException e) {
+            throw AuthorizationExceptionHandler.process(e);
+        }
+        catch (SpiException e) {
+            if (e.getStatus() == Pkcs11StatusIds.KEY_FUNCTION_NOT_PERMITTED) {
+                LOGGER.error("Key can not be used to decrypt the request as the decrypt attribute of the key is set to false.");
+            } else if(e.getMessage().contains("status: MissingParameter")) {
+                if(decryptPayload.getTagLength() != 0 && Strings.isNullOrEmpty(decryptPayload.getInitializationVector())){
+                    throw new BusinessException("Tag length is specified, need initializationVector as well", BusinessReason.ERROR_IN_HSM, e);
+                }
+            }
+            List<Integer> listOfSupportedTagLength = List.of(128, 120, 112, 104, 96, 64);
+            if (decryptPayload.getTagLength() != null
+                    && decryptPayload.getTagLength() != 0
+                    && !listOfSupportedTagLength.contains(Integer.valueOf(decryptPayload.getTagLength())))
+                throw new BusinessException("Error specified tagLength not supported.", BusinessReason.ERROR_INVALID_TAGLENGTH);
+            throw createDecryptErrorException(e);
+        }
+        catch (Exception e) {
+            throw createDecryptErrorException(e);
+        }
+    }
+    private static BusinessException createDecryptErrorException(Exception e) {
+        return new BusinessException("Error decrypting payload", BusinessReason.ERROR_IN_HSM, e);
+    }
+
     private SecretKey createSymmetricKey(CreateKeyDto createKey) {
         // create signing key
         final String keyName = createKey.getLabel();
@@ -980,7 +1097,7 @@ public class JceClient implements HsmClient {
 
     }
     @Override
-    public void doSelfSignedCertificate(String keyLabel, String username) {
+    public String doSelfSignedCertificate(String keyLabel, String username) {
         login();
         final KeytoolSignatureAlgorithm sigAlg = KeytoolSignatureAlgorithm.SHA256_WITH_RSA;
         final String validity = "3650";
@@ -993,6 +1110,7 @@ public class JceClient implements HsmClient {
         final String basicConstraint = CertificateUtil.craftx509BasicConstraint("BC", "ca", false);
         KeyToolUtil.GenerateSelfSignedSyncCertificate(keyLabel, null, sigAlg, distinguishedName, validity,
                 keyUsage, extendedKeyUsage, basicConstraint, subjectAlternativeNames);
+        return getCertFromHsm(keyLabel, username, null);
     }
 
     @Override

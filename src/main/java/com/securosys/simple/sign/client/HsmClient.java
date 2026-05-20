@@ -5,6 +5,7 @@ package com.securosys.simple.sign.client;
 
 import com.securosys.simple.sign.client.dto.request.CreateKeyDto;
 import com.securosys.simple.sign.client.dto.request.CertificateIssueOptions;
+import com.securosys.simple.sign.client.dto.result.DecryptResult;
 import com.securosys.simple.sign.client.dto.result.SignResult;
 
 import java.security.PublicKey;
@@ -19,11 +20,13 @@ public interface HsmClient {
 
     SignResult createSignature(byte[] payload, String keyName, String password, String algorithm, String signatureType)
             throws Throwable;
+    DecryptResult decrypt(String encryptedPayload, String keyName, String password, String cipherAlgorithm)
+            throws Exception;
     void createKey(CreateKeyDto createKeyDto) throws Exception;
     boolean checkIfKeyExists(String keyLabel,String password) throws Exception;
     void deleteKey(String keyLabel,String password) throws Exception;
     String getCertFromHsm(String keyLabel, String cname, String caKeyName) throws Exception;
-    void doSelfSignedCertificate(String keyLabel, String username) throws Exception;
+    String doSelfSignedCertificate(String keyLabel, String username) throws Exception;
     String generateCertificateSigningRequest(String keyLabel, CertificateIssueOptions options) throws Exception;
     String importCertificate(String keyLabel, String certificate) throws Exception;
     String issueSignedCertificate(String keyLabel, CertificateIssueOptions options) throws Exception;

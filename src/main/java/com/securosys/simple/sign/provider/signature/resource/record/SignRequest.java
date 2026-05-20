@@ -29,11 +29,7 @@ public record SignRequest(
          */
         String payload,
         /**
-         * The name of the key to use for signing.
+         * The signature algorithm to use. If omitted, SHA256_WITH_RSA is used.
          */
-        String keyName,
-        /**
-         * The common name (CN) of the signer, used for identity verification.
-         */
-        String signerCn) {
+        String signatureAlgorithm) {
 }
